@@ -1,0 +1,27 @@
+# Local Terraform directories
+.terraform/
+**/.terraform/
+
+# Terraform state and generated files
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfvars
+*.tfvars.json
+.terraform.lock.hcl
+
+# CLI configuration files
+.terraformrc
+terraform.rc
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+
+# Logs
+*.log
