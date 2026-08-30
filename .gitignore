@@ -1,7 +1,7 @@
 # Local Terraform directories
 .terraform/
 **/.terraform/
-
+s
 # Terraform state and generated files
 *.tfstate
 *.tfstate.*
@@ -18,7 +18,7 @@ terraform.rc
 # OS/editor files
 .DS_Store
 Thumbs.db
-
+S
 # IDE files
 .vscode/
 .idea/

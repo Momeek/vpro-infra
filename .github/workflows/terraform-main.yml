@@ -1,0 +1,165 @@
+name: Terraform Infra Pipeline
+
+on:
+    pull_request:
+        branches:
+            - main
+        paths:
+            - "**/*.tf"
+            - ".github/workflows/terraform-main.yml"
+    push:
+        branches:
+            - main
+        paths:
+            - "**/*.tf"
+            - ".github/workflows/terraform-main.yml"
+    schedule:
+        - cron: "0 0,6,12,18,23 * * *"
+    workflow_dispatch:
+        inputs:
+            apply_now:
+                description: Type APPLY to run terraform apply on main
+                required: false
+                default: ""
+
+permissions:
+    contents: read
+    id-token: write
+    pull-requests: write
+
+jobs:
+    validate-and-plan:
+        name: Validate and Plan
+        if: github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        runs-on: ubuntu-latest
+        env:
+            AWS_REGION: us-east-1
+            TF_IN_AUTOMATION: "true"
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+
+            - name: Setup Terraform
+              uses: hashicorp/setup-terraform@v3
+              with:
+                  terraform_version: 1.15.6
+
+            - name: Configure AWS credentials with OIDC
+              uses: aws-actions/configure-aws-credentials@v4
+              with:
+                  role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
+                  aws-region: ${{ vars.AWS_REGION }}
+
+            - name: Terraform format check
+              run: terraform fmt -check -diff
+
+            - name: Terraform init
+              run: terraform init -reconfigure
+
+            - name: Terraform validate
+              run: terraform validate
+
+            - name: Terraform plan
+              id: plan
+              run: terraform plan -no-color -out=tfplan
+
+            - name: Upload plan artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: tfplan
+                  path: tfplan
+
+    drift-check:
+        name: Drift Detection and Slack Notification
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        runs-on: ubuntu-latest
+        env:
+            AWS_REGION: us-east-1
+            TF_IN_AUTOMATION: "true"
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+
+            - name: Setup Terraform
+              uses: hashicorp/setup-terraform@v3
+              with:
+                  terraform_version: 1.15.6
+
+            - name: Configure AWS credentials with OIDC
+              uses: aws-actions/configure-aws-credentials@v4
+              with:
+                  role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
+                  aws-region: ${{ vars.AWS_REGION }}
+
+            - name: Terraform init
+              run: terraform init -reconfigure
+
+            - name: Detect drift
+              id: drift
+              run: |
+                  set +e
+                  terraform plan -detailed-exitcode -no-color > drift.txt 2>&1
+                  status=$?
+                  cat drift.txt
+
+                  if [ "$status" -eq 0 ]; then
+                    echo "status=clean" >> "$GITHUB_OUTPUT"
+                    echo "drift=false" >> "$GITHUB_OUTPUT"
+                  elif [ "$status" -eq 2 ]; then
+                    echo "status=drift" >> "$GITHUB_OUTPUT"
+                    echo "drift=true" >> "$GITHUB_OUTPUT"
+                  else
+                    echo "status=error" >> "$GITHUB_OUTPUT"
+                    echo "drift=error" >> "$GITHUB_OUTPUT"
+                    exit 1
+                  fi
+
+            - name: Notify Slack
+              if: always()
+              uses: slackapi/slack-github-action@v1.27.0
+              env:
+                  SLACK_WEBHOOK_URL: ${{ vars.SLACK_WEBHOOK_URL }}
+              with:
+                  payload: |
+                      {
+                        "text": "Terraform drift check: repo=${{ github.repository }}, ref=${{ github.ref_name }}, status=${{ steps.drift.outputs.status }}, drift=${{ steps.drift.outputs.drift }}"
+                      }
+
+            - name: Fail on drift
+              if: steps.drift.outputs.drift == 'true'
+              run: |
+                  echo "Drift detected. Review the AWS environment."
+                  exit 1
+
+    apply:
+        name: Manual Apply
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.apply_now == 'APPLY'
+        runs-on: ubuntu-latest
+        environment:
+            name: production
+        env:
+            AWS_REGION: us-east-1
+            TF_IN_AUTOMATION: "true"
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+
+            - name: Setup Terraform
+              uses: hashicorp/setup-terraform@v3
+              with:
+                  terraform_version: 1.15.6
+
+            - name: Configure AWS credentials with OIDC
+              uses: aws-actions/configure-aws-credentials@v4
+              with:
+                  role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
+                  aws-region: ${{ vars.AWS_REGION }}
+
+            - name: Terraform init
+              run: terraform init -reconfigure
+
+            - name: Terraform apply
+              run: terraform apply -auto-approve
